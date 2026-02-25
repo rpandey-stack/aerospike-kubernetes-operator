@@ -869,12 +869,14 @@ var _ = Describe("AerospikeCluster validation (envtests)", func() {
 
 	})
 
-	Context("UpdateValidation", func() {
-		const updateValidationClusterName = "update-validation-cluster"
-		updateValidationClusterNamespacedName := test.GetNamespacedName(updateValidationClusterName, testNs)
+	// Moved from test/cluster/cluster_test.go negativeUpdateClusterValidationTest (webhook update validation only).
+	Context("negativeUpdateClusterValidationTest", func() {
+		const negUpdateClusterName = "negative-update-validation-cluster"
+		negUpdateClusterNamespacedName := test.GetNamespacedName(negUpdateClusterName, testNs)
+		const invalidImageVersion = "3.0.0.4"
 
 		It("UpdateValidation:Storage:Should fail when storage config is updated", func() {
-			aeroCluster := testCluster.CreateDummyAerospikeCluster(updateValidationClusterNamespacedName, 2)
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 2)
 			err := envtests.K8sClient.Create(ctx, aeroCluster)
 			Expect(err).ToNot(HaveOccurred())
 
@@ -884,8 +886,8 @@ var _ = Describe("AerospikeCluster validation (envtests)", func() {
 
 			current := &asdbv1.AerospikeCluster{}
 			err = envtests.K8sClient.Get(ctx, types.NamespacedName{
-				Name:      updateValidationClusterNamespacedName.Name,
-				Namespace: updateValidationClusterNamespacedName.Namespace}, current)
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)
 			Expect(err).ToNot(HaveOccurred())
 
 			// Change storage (e.g. StorageClass) to trigger "storage config cannot be updated"
@@ -908,7 +910,7 @@ var _ = Describe("AerospikeCluster validation (envtests)", func() {
 		})
 
 		It("UpdateValidation:MultiPodPerHost:Should fail when MultiPodPerHost is changed", func() {
-			aeroCluster := testCluster.CreateDummyAerospikeCluster(updateValidationClusterNamespacedName, 2)
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 2)
 			err := envtests.K8sClient.Create(ctx, aeroCluster)
 			Expect(err).ToNot(HaveOccurred())
 
@@ -918,8 +920,8 @@ var _ = Describe("AerospikeCluster validation (envtests)", func() {
 
 			current := &asdbv1.AerospikeCluster{}
 			err = envtests.K8sClient.Get(ctx, types.NamespacedName{
-				Name:      updateValidationClusterNamespacedName.Name,
-				Namespace: updateValidationClusterNamespacedName.Namespace}, current)
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)
 			Expect(err).ToNot(HaveOccurred())
 
 			// Toggle MultiPodPerHost to trigger "cannot update MultiPodPerHost setting"
@@ -934,5 +936,377 @@ var _ = Describe("AerospikeCluster validation (envtests)", func() {
 					"cannot update MultiPodPerHost setting").
 				Validate(err)
 		})
+
+		It("InvalidImage: should fail for InvalidImage, should fail for image lower than base", func() {
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 3)
+			err := envtests.K8sClient.Create(ctx, aeroCluster)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = envtests.K8sClient.Delete(ctx, aeroCluster) })
+
+			current := &asdbv1.AerospikeCluster{}
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			current.Spec.Image = "InvalidImage"
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"vaerospikecluster.kb.io\" denied the request:",
+					"CommunityEdition Cluster not supported").
+				Validate(err)
+
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			current.Spec.Image = testutil.BaseEnterpriseImage + ":" + invalidImageVersion
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"vaerospikecluster.kb.io\" denied the request:",
+					"image version 3.0.0.4 not supported. Base version 6.0.0.0").
+				Validate(err)
+		})
+
+		It("InvalidSize: should fail for zero size", func() {
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 3)
+			err := envtests.K8sClient.Create(ctx, aeroCluster)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = envtests.K8sClient.Delete(ctx, aeroCluster) })
+
+			current := &asdbv1.AerospikeCluster{}
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			current.Spec.Size = 0
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"vaerospikecluster.kb.io\" denied the request:",
+					"invalid cluster size 0").
+				Validate(err)
+		})
+
+		It("InvalidDnsPolicy: should fail when dnsPolicy is set to 'Default'", func() {
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 3)
+			err := envtests.K8sClient.Create(ctx, aeroCluster)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = envtests.K8sClient.Delete(ctx, aeroCluster) })
+
+			current := &asdbv1.AerospikeCluster{}
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			defaultDNS := v1.DNSDefault
+			current.Spec.PodSpec.InputDNSPolicy = &defaultDNS
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"vaerospikecluster.kb.io\" denied the request:",
+					"dnsPolicy: Default is not supported").
+				Validate(err)
+		})
+
+		It("MissingDnsConfig: Should fail when dnsPolicy is set to 'None' and no dnsConfig given", func() {
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 3)
+			err := envtests.K8sClient.Create(ctx, aeroCluster)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = envtests.K8sClient.Delete(ctx, aeroCluster) })
+
+			current := &asdbv1.AerospikeCluster{}
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			noneDNS := v1.DNSNone
+			current.Spec.PodSpec.InputDNSPolicy = &noneDNS
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"vaerospikecluster.kb.io\" denied the request:",
+					"dnsConfig is required field when dnsPolicy is set to None").
+				Validate(err)
+		})
+
+		It("InvalidAerospikeConfig:should fail for empty aerospikeConfig, should fail for invalid aerospikeConfig", func() {
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 3)
+			err := envtests.K8sClient.Create(ctx, aeroCluster)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = envtests.K8sClient.Delete(ctx, aeroCluster) })
+
+			current := &asdbv1.AerospikeCluster{}
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			current.Spec.AerospikeConfig = &asdbv1.AerospikeConfigSpec{}
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"maerospikecluster.kb.io\" denied the request:",
+					"spec.aerospikeConfig cannot be nil").
+				Validate(err)
+
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			current.Spec.AerospikeConfig = &asdbv1.AerospikeConfigSpec{
+				Value: map[string]interface{}{
+					asdbv1.ConfKeyNamespace: "invalidConf",
+				},
+			}
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"maerospikecluster.kb.io\" denied the request:",
+					"aerospikeConfig.namespaces not valid namespace list invalidConf").
+				Validate(err)
+		})
+
+		It("InvalidNamespace: NilAerospikeConfigNamespace: should fail for nil aerospikeConfig.namespace", func() {
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 3)
+			err := envtests.K8sClient.Create(ctx, aeroCluster)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = envtests.K8sClient.Delete(ctx, aeroCluster) })
+
+			current := &asdbv1.AerospikeCluster{}
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			current.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace] = nil
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"maerospikecluster.kb.io\" denied the request:",
+					"aerospikeConfig.namespaces cannot be nil").
+				Validate(err)
+		})
+
+		It("InvalidNamespace: Namespace name missing: should fail for nil aerospikeConfig.namespace.name", func() {
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 3)
+			err := envtests.K8sClient.Create(ctx, aeroCluster)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = envtests.K8sClient.Delete(ctx, aeroCluster) })
+
+			current := &asdbv1.AerospikeCluster{}
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			nsList := current.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})
+			delete(nsList[0].(map[string]interface{}), "name")
+			current.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace] = nsList
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"vaerospikecluster.kb.io\" denied the request:",
+					"aerospikeConfig not valid: generated config not valid for version 8.1.1.0:",
+					"config schema error", "{map[logging:[map[any:info name:console]] network:map[fabric:map[port:3001]",
+					"heartbeat:map[mode:mesh port:3002] service:map[access-addresses:[<access-address>]",
+					"access-port:3000 alternate-access-addresses:[<alternate-access-address>]",
+					"alternate-access-port:3000 port:3000]] security:map[] service:map[auto-pin:none",
+					"cluster-name:negative-update-validation-cluster feature-key-file:/etc/aerospike/secret/features.conf",
+					"node-id:ENV_NODE_ID proto-fd-max:15000]] required (root) namespaces is required (root)}").
+				Validate(err)
+		})
+
+		It("InvalidStorage: NilStorageEngine: should fail for nil storage-engine", func() {
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 3)
+			err := envtests.K8sClient.Create(ctx, aeroCluster)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = envtests.K8sClient.Delete(ctx, aeroCluster) })
+
+			current := &asdbv1.AerospikeCluster{}
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			nsConf := current.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})[0].(map[string]interface{})
+			nsConf["storage-engine"] = nil
+			current.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})[0] = nsConf
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"vaerospikecluster.kb.io\" denied the request:",
+					"storage-engine cannot be nil for namespace",
+					"map[name:test replication-factor:2 storage-engine:<nil> strong-consistency:true]").
+				Validate(err)
+		})
+
+		It("InvalidStorage: NilStorageEngineFile: should fail for nil storage-engine.file", func() {
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 3)
+			err := envtests.K8sClient.Create(ctx, aeroCluster)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = envtests.K8sClient.Delete(ctx, aeroCluster) })
+
+			current := &asdbv1.AerospikeCluster{}
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			nsConf := current.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})[0].(map[string]interface{})
+			if _, ok := nsConf["storage-engine"].(map[string]interface{})["files"]; ok {
+				nsConf["storage-engine"].(map[string]interface{})["files"] = nil
+				current.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})[0] = nsConf
+				err = envtests.K8sClient.Update(ctx, current)
+				Expect(err).To(HaveOccurred())
+
+				envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+					WithMessageSubstrings("admission webhook \"vaerospikecluster.kb.io\" denied the request:").
+					Validate(err)
+			}
+		})
+
+		It("InvalidStorage: ExtraStorageEngineDevice: should fail for"+
+			"invalid storage-engine.device, cannot add a device which doesn't exist in BlockStorage", func() {
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 3)
+			err := envtests.K8sClient.Create(ctx, aeroCluster)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = envtests.K8sClient.Delete(ctx, aeroCluster) })
+
+			current := &asdbv1.AerospikeCluster{}
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			nsConf := current.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})[0].(map[string]interface{})
+			if _, ok := nsConf["storage-engine"].(map[string]interface{})["devices"]; ok {
+				devList := nsConf["storage-engine"].(map[string]interface{})["devices"].([]interface{})
+				devList = append(devList, "andRandomDevice")
+				nsConf["storage-engine"].(map[string]interface{})["devices"] = devList
+				current.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})[0] = nsConf
+				err = envtests.K8sClient.Update(ctx, current)
+				Expect(err).To(HaveOccurred())
+
+				envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+					WithMessageSubstrings("admission webhook \"vaerospikecluster.kb.io\" denied the request:",
+						"namespace storage device related devicePath andRandomDevice not found in Storage config").
+					Validate(err)
+			}
+		})
+
+		It("InvalidStorage: DuplicateStorageEngineDevice: should fail for"+
+			"invalid storage-engine.device, cannot add a device which already exist in another namespace", func() {
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 3)
+			err := envtests.K8sClient.Create(ctx, aeroCluster)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = envtests.K8sClient.Delete(ctx, aeroCluster) })
+
+			current := &asdbv1.AerospikeCluster{}
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			secondNs := map[string]interface{}{
+				"name":               "ns1",
+				"replication-factor": 2,
+				"storage-engine": map[string]interface{}{
+					"type":    "device",
+					"devices": []interface{}{"/test/dev/xvdf"},
+				},
+			}
+			nsList := current.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})
+			nsList = append(nsList, secondNs)
+			current.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace] = nsList
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"vaerospikecluster.kb.io\" denied the request:",
+					"device /test/dev/xvdf is already being referenced in multiple namespaces (test, ns1)").
+				Validate(err)
+		})
+
+		It("ChangeDefaultConfig:ServiceConf: should fail for setting node-id, should fail for setting cluster-name", func() {
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 3)
+			err := envtests.K8sClient.Create(ctx, aeroCluster)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = envtests.K8sClient.Delete(ctx, aeroCluster) })
+
+			current := &asdbv1.AerospikeCluster{}
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			current.Spec.AerospikeConfig.Value[asdbv1.ConfKeyService].(map[string]interface{})["node-id"] = "a10"
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"maerospikecluster.kb.io\" denied the request:",
+					"config node-id can not have non-default value (string a10).",
+					"It will be set internally (string ENV_NODE_ID)").
+				Validate(err)
+
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			serviceConf := current.Spec.AerospikeConfig.Value[asdbv1.ConfKeyService].(map[string]interface{})
+			serviceConf[clusterNameConfig] = clusterNameConfig
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"maerospikecluster.kb.io\" denied the request:",
+					"failed to set default aerospikeConfig.service config:",
+					"config cluster-name can not have non-default value (string cluster-name).",
+					"It will be set internally (string negative-update-validation-cluster)").
+				Validate(err)
+		})
+
+		It("InvalidLogging: should fail for using syslog param with file or console logging", func() {
+			aeroCluster := testCluster.CreateDummyAerospikeCluster(negUpdateClusterNamespacedName, 3)
+			err := envtests.K8sClient.Create(ctx, aeroCluster)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = envtests.K8sClient.Delete(ctx, aeroCluster) })
+
+			current := &asdbv1.AerospikeCluster{}
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			loggingConf := []interface{}{
+				map[string]interface{}{
+					"name":     "anyFileName",
+					"path":     "/dev/log",
+					"tag":      "asd",
+					"facility": "local0",
+				},
+			}
+			current.Spec.AerospikeConfig.Value["logging"] = loggingConf
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"vaerospikecluster.kb.io\" denied the request:",
+					"can use facility only with `syslog` in aerospikeConfig.logging",
+					"map[facility:local0 name:anyFileName path:/dev/log tag:asd]").
+				Validate(err)
+		})
+
+		It("InvalidAerospikeConfigSecret: WhenFeatureKeyExist: should fail for"+
+			"no feature-key-file path in storage volumes", func() {
+			aeroCluster := testCluster.CreateAerospikeClusterPost640(negUpdateClusterNamespacedName, 2,
+				testutil.LatestEnterpriseImage)
+			err := envtests.K8sClient.Create(ctx, aeroCluster)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = envtests.K8sClient.Delete(ctx, aeroCluster) })
+
+			current := &asdbv1.AerospikeCluster{}
+			Expect(envtests.K8sClient.Get(ctx, types.NamespacedName{
+				Name:      negUpdateClusterNamespacedName.Name,
+				Namespace: negUpdateClusterNamespacedName.Namespace}, current)).To(Succeed())
+			current.Spec.AerospikeConfig.Value[asdbv1.ConfKeyService] = map[string]interface{}{
+				"feature-key-file": "/randompath/features.conf",
+			}
+			err = envtests.K8sClient.Update(ctx, current)
+			Expect(err).To(HaveOccurred())
+
+			envtests.NewStatusErrorMatcher(int32(403), metav1.StatusReasonForbidden).
+				WithMessageSubstrings("admission webhook \"vaerospikecluster.kb.io\" denied the request:",
+					"feature-key-file paths or tls paths or default-password-file path are not mounted",
+					"- create an entry for '/randompath/features.conf' in 'storage.volumes").
+				Validate(err)
+		})
 	})
+
 })
