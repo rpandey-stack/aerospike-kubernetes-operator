@@ -1924,641 +1924,240 @@ func UpdateClusterTest(ctx goctx.Context) {
 	)
 }
 
-// Test cluster validation Common for deployment and update both
+// Test cluster validation Common for deployment and update both.
+// Webhook update validation tests moved to
+// test/envtests/cluster/cluster_webhook_test.go (negativeUpdateClusterValidationTest).
 func NegativeClusterValidationTest(ctx goctx.Context) {
 	Context(
 		"NegativeUpdateClusterValidationTest", func() {
-			negativeUpdateClusterValidationTest(ctx)
-		},
-	)
-}
-
-func negativeUpdateClusterValidationTest(
-	ctx goctx.Context,
-) {
-	// Will be used in Update
-	Context(
-		"Validation", func() {
-			clusterName := fmt.Sprintf("invalid-cluster-%d", GinkgoParallelProcess())
-			clusterNamespacedName := test.GetNamespacedName(
-				clusterName, namespace,
-			)
-
-			BeforeEach(
-				func() {
-					aeroCluster := createDummyAerospikeCluster(
-						clusterNamespacedName, 3,
-					)
-
-					Expect(DeployCluster(k8sClient, ctx, aeroCluster)).ToNot(HaveOccurred())
-				},
-			)
-
-			AfterEach(
-				func() {
-					aeroCluster := &asdbv1.AerospikeCluster{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      clusterName,
-							Namespace: namespace,
-						},
-					}
-
-					Expect(DeleteCluster(k8sClient, ctx, aeroCluster)).ToNot(HaveOccurred())
-					Expect(CleanupPVC(k8sClient, aeroCluster.Namespace, aeroCluster.Name)).ToNot(HaveOccurred())
-				},
-			)
-
-			It(
-				"InvalidImage: should fail for InvalidImage, should fail for image lower than base",
-				func() {
-					aeroCluster, err := getCluster(
-						k8sClient, ctx, clusterNamespacedName,
-					)
-					Expect(err).ToNot(HaveOccurred())
-
-					aeroCluster.Spec.Image = "InvalidImage"
-					err = k8sClient.Update(ctx, aeroCluster)
-					Expect(err).Should(HaveOccurred())
-
-					aeroCluster, err = getCluster(
-						k8sClient, ctx, clusterNamespacedName,
-					)
-					Expect(err).ToNot(HaveOccurred())
-
-					aeroCluster.Spec.Image = invalidImage
-					err = k8sClient.Update(ctx, aeroCluster)
-					Expect(err).Should(HaveOccurred())
-				},
-			)
-
-			It(
-				"InvalidSize: should fail for zero size", func() {
-					aeroCluster, err := getCluster(
-						k8sClient, ctx, clusterNamespacedName,
-					)
-					Expect(err).ToNot(HaveOccurred())
-
-					aeroCluster.Spec.Size = 0
-					err = k8sClient.Update(ctx, aeroCluster)
-					Expect(err).Should(HaveOccurred())
-				},
-			)
-
 			Context(
-				"InvalidDNSConfiguration", func() {
-					It(
-						"InvalidDnsPolicy: should fail when dnsPolicy is set to 'Default'",
+				"FailedPodGracePeriodConfiguration", func() {
+					clusterName := fmt.Sprintf("grace-period-%d", GinkgoParallelProcess())
+					clusterNamespacedName := test.GetNamespacedName(
+						clusterName, namespace,
+					)
+
+					AfterEach(
 						func() {
-							aeroCluster, err := getCluster(
-								k8sClient, ctx, clusterNamespacedName,
-							)
-							Expect(err).ToNot(HaveOccurred())
+							aeroCluster := &asdbv1.AerospikeCluster{
+								ObjectMeta: metav1.ObjectMeta{
+									Name:      clusterNamespacedName.Name,
+									Namespace: namespace,
+								},
+							}
 
-							defaultDNS := v1.DNSDefault
-							aeroCluster.Spec.PodSpec.InputDNSPolicy = &defaultDNS
-							err = updateCluster(k8sClient, ctx, aeroCluster)
-							Expect(err).Should(HaveOccurred())
+							Expect(DeleteCluster(k8sClient, ctx, aeroCluster)).ToNot(HaveOccurred())
+							Expect(CleanupPVC(k8sClient, aeroCluster.Namespace, aeroCluster.Name)).ToNot(HaveOccurred())
 						},
 					)
 
 					It(
-						"MissingDnsConfig: Should fail when dnsPolicy is set to 'None' and no dnsConfig given",
-						func() {
-							aeroCluster, err := getCluster(
-								k8sClient, ctx, clusterNamespacedName,
-							)
+						"Should wait for grace period before recreating pods in fresh cluster deployment", func() {
+							By("Creating fresh cluster with unschedulable resource requirements")
+
+							aeroCluster := createDummyAerospikeCluster(clusterNamespacedName, 2)
+							// Make pods unschedulable by requesting excessive memory
+							aeroCluster.Spec.PodSpec.AerospikeContainerSpec.Resources = unschedulableResource()
+
+							err := k8sClient.Create(ctx, aeroCluster)
 							Expect(err).ToNot(HaveOccurred())
 
-							noneDNS := v1.DNSNone
-							aeroCluster.Spec.PodSpec.InputDNSPolicy = &noneDNS
-							err = updateCluster(k8sClient, ctx, aeroCluster)
-							Expect(err).Should(HaveOccurred())
-						},
-					)
-				},
-			)
+							By("Waiting for pods to be created and enter pending state")
 
-			Context(
-				"InvalidAerospikeConfig: should fail for empty aerospikeConfig, should fail for invalid aerospikeConfig",
-				func() {
-					It(
-						"should fail for empty aerospikeConfig, should fail for invalid aerospikeConfig",
-						func() {
-							aeroCluster, err := getCluster(
-								k8sClient, ctx, clusterNamespacedName,
-							)
-							Expect(err).ToNot(HaveOccurred())
-
-							aeroCluster.Spec.AerospikeConfig = &asdbv1.AerospikeConfigSpec{}
-							err = k8sClient.Update(ctx, aeroCluster)
-							Expect(err).Should(HaveOccurred())
-
-							aeroCluster, err = getCluster(
-								k8sClient, ctx, clusterNamespacedName,
-							)
-							Expect(err).ToNot(HaveOccurred())
-
-							aeroCluster.Spec.AerospikeConfig = &asdbv1.AerospikeConfigSpec{
-								Value: map[string]interface{}{
-									asdbv1.ConfKeyNamespace: "invalidConf",
-								},
-							}
-							err = k8sClient.Update(ctx, aeroCluster)
-							Expect(err).Should(HaveOccurred())
-						},
-					)
-
-					Context(
-						"InvalidNamespace", func() {
-							It(
-								"NilAerospikeNamespace: should fail for nil aerospikeConfig.namespace",
-								func() {
-									aeroCluster, err := getCluster(
-										k8sClient, ctx, clusterNamespacedName,
-									)
-									Expect(err).ToNot(HaveOccurred())
-
-									aeroCluster.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace] = nil
-									err = k8sClient.Update(ctx, aeroCluster)
-									Expect(err).Should(HaveOccurred())
-								},
+							var (
+								podList *v1.PodList
+								uuidMap = make(map[string]types.UID)
 							)
 
-							It(
-								"Namespace name missing: should fail for nil aerospikeConfig.namespace.name",
-								func() {
-									aeroCluster, err := getCluster(
-										k8sClient, ctx, clusterNamespacedName,
-									)
-									Expect(err).ToNot(HaveOccurred())
+							Eventually(
+								func() error {
+									podList, err = getPodList(aeroCluster, k8sClient)
+									if err != nil {
+										return err
+									}
 
-									delete(aeroCluster.Spec.AerospikeConfig.
-										Value[asdbv1.ConfKeyNamespace].([]interface{})[0].(map[string]interface{}), "name")
-									err = k8sClient.Update(ctx, aeroCluster)
-									Expect(err).Should(HaveOccurred())
-								},
-							)
+									if len(podList.Items) != int(aeroCluster.Spec.Size) {
+										return fmt.Errorf("expected %d pods, found %d",
+											aeroCluster.Spec.Size, len(podList.Items))
+									}
 
-							// Should we test for overridden fields
-							Context(
-								"InvalidStorage", func() {
-									It(
-										"NilStorageEngine: should fail for nil storage-engine",
-										func() {
-											aeroCluster, err := getCluster(
-												k8sClient, ctx,
-												clusterNamespacedName,
-											)
-											Expect(err).ToNot(HaveOccurred())
+									for idx := range podList.Items {
+										pod := &podList.Items[idx]
+										if pod.Status.Phase != v1.PodPending {
+											return fmt.Errorf("pod %s is not in pending state", pod.Name)
+										}
 
-											namespaceConfig :=
-												aeroCluster.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})[0].(map[string]interface{})
-											namespaceConfig["storage-engine"] = nil
-											aeroCluster.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})[0] =
-												namespaceConfig
-											err = k8sClient.Update(
-												ctx, aeroCluster,
-											)
-											Expect(err).Should(HaveOccurred())
-										},
-									)
+										uuidMap[pod.Name] = pod.UID
+									}
 
-									It(
-										"NilStorageEngineDevice: should fail for nil storage-engine.device",
-										func() {
-											aeroCluster, err := getCluster(
-												k8sClient, ctx,
-												clusterNamespacedName,
-											)
-											Expect(err).ToNot(HaveOccurred())
-
-											namespaceConfig :=
-												aeroCluster.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})[0].(map[string]interface{})
-											if _, ok := namespaceConfig["storage-engine"].(map[string]interface{})["devices"]; ok {
-												namespaceConfig["storage-engine"].(map[string]interface{})["devices"] = nil
-												aeroCluster.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})[0] = namespaceConfig
-												err = k8sClient.Update(
-													ctx, aeroCluster,
-												)
-												Expect(err).Should(HaveOccurred())
-											}
-										},
-									)
-
-									It(
-										"NilStorageEngineFile: should fail for nil storage-engine.file",
-										func() {
-											aeroCluster, err := getCluster(
-												k8sClient, ctx,
-												clusterNamespacedName,
-											)
-											Expect(err).ToNot(HaveOccurred())
-
-											namespaceConfig :=
-												aeroCluster.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})[0].(map[string]interface{})
-											if _, ok := namespaceConfig["storage-engine"].(map[string]interface{})["files"]; ok {
-												namespaceConfig["storage-engine"].(map[string]interface{})["files"] = nil
-												aeroCluster.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})[0] = namespaceConfig
-												err = k8sClient.Update(
-													ctx, aeroCluster,
-												)
-												Expect(err).Should(HaveOccurred())
-											}
-										},
-									)
-
-									It(
-										"ExtraStorageEngineDevice: should fail for invalid storage-engine.device,"+
-											" cannot add a device which doesn't exist in BlockStorage",
-										func() {
-											aeroCluster, err := getCluster(
-												k8sClient, ctx,
-												clusterNamespacedName,
-											)
-											Expect(err).ToNot(HaveOccurred())
-
-											namespaceConfig :=
-												aeroCluster.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})[0].(map[string]interface{})
-											if _, ok := namespaceConfig["storage-engine"].(map[string]interface{})["devices"]; ok {
-												devList := namespaceConfig["storage-engine"].(map[string]interface{})["devices"].([]interface{})
-												devList = append(
-													devList, "andRandomDevice",
-												)
-												namespaceConfig["storage-engine"].(map[string]interface{})["devices"] = devList
-												aeroCluster.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})[0] = namespaceConfig
-												err = k8sClient.Update(
-													ctx, aeroCluster,
-												)
-												Expect(err).Should(HaveOccurred())
-											}
-										},
-									)
-
-									It(
-										"DuplicateStorageEngineDevice: should fail for invalid storage-engine.device,"+
-											" cannot add a device which already exist in another namespace",
-										func() {
-											aeroCluster, err := getCluster(
-												k8sClient, ctx,
-												clusterNamespacedName,
-											)
-											Expect(err).ToNot(HaveOccurred())
-
-											secondNs := map[string]interface{}{
-												"name":               "ns1",
-												"replication-factor": 2,
-												"storage-engine": map[string]interface{}{
-													"type":    "device",
-													"devices": []interface{}{"/test/dev/xvdf"},
-												},
-											}
-
-											nsList := aeroCluster.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace].([]interface{})
-											nsList = append(nsList, secondNs)
-											aeroCluster.Spec.AerospikeConfig.Value[asdbv1.ConfKeyNamespace] = nsList
-											err = k8sClient.Update(
-												ctx, aeroCluster,
-											)
-											Expect(err).Should(HaveOccurred())
-										},
-									)
-								},
-							)
-						},
-					)
-
-					Context(
-						"ChangeDefaultConfig", func() {
-							It(
-								"ServiceConf: should fail for setting node-id, should fail for setting cluster-name",
-								func() {
-									// Service conf
-									// 	"node-id"
-									// 	"cluster-name"
-									aeroCluster, err := getCluster(
-										k8sClient, ctx, clusterNamespacedName,
-									)
-									Expect(err).ToNot(HaveOccurred())
-
-									aeroCluster.Spec.AerospikeConfig.Value[asdbv1.ConfKeyService].(map[string]interface{})["node-id"] = "a10"
-									err = k8sClient.Update(ctx, aeroCluster)
-									Expect(err).Should(HaveOccurred())
-
-									aeroCluster, err = getCluster(
-										k8sClient, ctx, clusterNamespacedName,
-									)
-									Expect(err).ToNot(HaveOccurred())
-
-									aeroCluster.Spec.AerospikeConfig.
-										Value[asdbv1.ConfKeyService].(map[string]interface{})[clusterNameConfig] = clusterNameConfig
-									err = k8sClient.Update(ctx, aeroCluster)
-									Expect(err).Should(HaveOccurred())
-								},
-							)
-						},
-					)
-				},
-			)
-
-			It(
-				"InvalidLogging: should fail for using syslog param with file or console logging", func() {
-					aeroCluster, err := getCluster(
-						k8sClient, ctx, clusterNamespacedName,
-					)
-					Expect(err).ToNot(HaveOccurred())
-
-					loggingConf := []interface{}{
-						map[string]interface{}{
-							"name":     "anyFileName",
-							"path":     "/dev/log",
-							"tag":      "asd",
-							"facility": "local0",
-						},
-					}
-
-					aeroCluster.Spec.AerospikeConfig.Value["logging"] = loggingConf
-					err = k8sClient.Update(ctx, aeroCluster)
-					Expect(err).Should(HaveOccurred())
-				},
-			)
-		},
-	)
-
-	Context(
-		"InvalidAerospikeConfigSecret", func() {
-			clusterName := fmt.Sprintf("invalid-cluster-%d", GinkgoParallelProcess())
-			clusterNamespacedName := test.GetNamespacedName(
-				clusterName, namespace,
-			)
-
-			BeforeEach(
-				func() {
-					aeroCluster := CreateAerospikeClusterPost640(
-						clusterNamespacedName, 2, latestImage,
-					)
-
-					Expect(DeployCluster(k8sClient, ctx, aeroCluster)).ToNot(HaveOccurred())
-				},
-			)
-
-			AfterEach(
-				func() {
-					aeroCluster := &asdbv1.AerospikeCluster{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      clusterName,
-							Namespace: namespace,
-						},
-					}
-
-					Expect(DeleteCluster(k8sClient, ctx, aeroCluster)).ToNot(HaveOccurred())
-					Expect(CleanupPVC(k8sClient, aeroCluster.Namespace, aeroCluster.Name)).ToNot(HaveOccurred())
-				},
-			)
-
-			It(
-				"WhenFeatureKeyExist: should fail for no feature-key-file path in storage volumes",
-				func() {
-					aeroCluster, err := getCluster(
-						k8sClient, ctx, clusterNamespacedName,
-					)
-					Expect(err).ToNot(HaveOccurred())
-
-					aeroCluster.Spec.AerospikeConfig.Value[asdbv1.ConfKeyService] = map[string]interface{}{
-						"feature-key-file": "/randompath/features.conf",
-					}
-					err = k8sClient.Update(ctx, aeroCluster)
-					Expect(err).Should(HaveOccurred())
-				},
-			)
-		},
-	)
-
-	Context(
-		"FailedPodGracePeriodConfiguration", func() {
-			clusterName := fmt.Sprintf("grace-period-%d", GinkgoParallelProcess())
-			clusterNamespacedName := test.GetNamespacedName(
-				clusterName, namespace,
-			)
-
-			AfterEach(
-				func() {
-					aeroCluster := &asdbv1.AerospikeCluster{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      clusterNamespacedName.Name,
-							Namespace: namespace,
-						},
-					}
-
-					Expect(DeleteCluster(k8sClient, ctx, aeroCluster)).ToNot(HaveOccurred())
-					Expect(CleanupPVC(k8sClient, aeroCluster.Namespace, aeroCluster.Name)).ToNot(HaveOccurred())
-				},
-			)
-
-			It(
-				"Should wait for grace period before recreating pods in fresh cluster deployment", func() {
-					By("Creating fresh cluster with unschedulable resource requirements")
-
-					aeroCluster := createDummyAerospikeCluster(clusterNamespacedName, 2)
-					// Make pods unschedulable by requesting excessive memory
-					aeroCluster.Spec.PodSpec.AerospikeContainerSpec.Resources = unschedulableResource()
-
-					err := k8sClient.Create(ctx, aeroCluster)
-					Expect(err).ToNot(HaveOccurred())
-
-					By("Waiting for pods to be created and enter pending state")
-
-					var (
-						podList *v1.PodList
-						uuidMap = make(map[string]types.UID)
-					)
-
-					Eventually(
-						func() error {
-							podList, err = getPodList(aeroCluster, k8sClient)
-							if err != nil {
-								return err
-							}
-
-							if len(podList.Items) != int(aeroCluster.Spec.Size) {
-								return fmt.Errorf("expected %d pods, found %d",
-									aeroCluster.Spec.Size, len(podList.Items))
-							}
-
-							for idx := range podList.Items {
-								pod := &podList.Items[idx]
-								if pod.Status.Phase != v1.PodPending {
-									return fmt.Errorf("pod %s is not in pending state", pod.Name)
-								}
-
-								uuidMap[pod.Name] = pod.UID
-							}
-
-							return nil
-						}, 5*time.Minute, 10*time.Second,
-					).Should(Succeed())
-
-					By("Waiting within grace period and verifying operator does not recreate pods")
-					pkgLog.Info("Waiting 20 seconds within grace period (grace period = 60s)...")
-					time.Sleep(20 * time.Second)
-
-					podList, err = getPodList(aeroCluster, k8sClient)
-					Expect(err).ToNot(HaveOccurred())
-
-					By("Verifying pods are not recreated within grace period")
-
-					for idx := range podList.Items {
-						pod := &podList.Items[idx]
-						Expect(pod.Status.Phase).To(Equal(v1.PodPending))
-						Expect(uuidMap[pod.Name]).To(Equal(pod.UID))
-					}
-
-					By("Verifying pods are recreated after grace period")
-
-					Eventually(
-						func() error {
-							podList, err = getPodList(aeroCluster, k8sClient)
-							if err != nil {
-								return err
-							}
-
-							if len(podList.Items) != int(aeroCluster.Spec.Size) {
-								return fmt.Errorf("expected %d pods, found %d",
-									aeroCluster.Spec.Size, len(podList.Items))
-							}
-
-							for idx := range podList.Items {
-								pod := &podList.Items[idx]
-								if uuidMap[pod.Name] == pod.UID {
-									return fmt.Errorf("pod %s was not recreated yet", pod.Name)
-								}
-							}
-
-							return nil
-						}, 5*time.Minute, 10*time.Second).Should(Succeed())
-				},
-			)
-
-			It(
-				"Should wait for grace period before recreating pods in an existing cluster", func() {
-					aeroCluster := createDummyAerospikeCluster(clusterNamespacedName, 2)
-
-					Expect(DeployCluster(k8sClient, ctx, aeroCluster)).ToNot(HaveOccurred())
-
-					aeroCluster.Spec.PodSpec.AerospikeContainerSpec.Resources = unschedulableResource()
-
-					err := updateClusterWithNoWait(k8sClient, ctx, aeroCluster)
-					Expect(err).ToNot(HaveOccurred())
-
-					var (
-						podList    *v1.PodList
-						pendingPod *v1.Pod
-					)
-
-					Eventually(
-						func() error {
-							podList, err = getPodList(aeroCluster, k8sClient)
-							if err != nil {
-								return err
-							}
-
-							for idx := range podList.Items {
-								pod := &podList.Items[idx]
-								if pod.Status.Phase == v1.PodPending {
-									pendingPod = pod
 									return nil
-								}
-							}
+								}, 5*time.Minute, 10*time.Second,
+							).Should(Succeed())
 
-							return fmt.Errorf("no pod in pending state")
-						}, 5*time.Minute, 10*time.Second,
-					).Should(Succeed())
+							By("Waiting within grace period and verifying operator does not recreate pods")
+							pkgLog.Info("Waiting 20 seconds within grace period (grace period = 60s)...")
+							time.Sleep(20 * time.Second)
 
-					By("Waiting within grace period and verifying operator does not recreate pods")
-					pkgLog.Info("Waiting 20 seconds within grace period (grace period = 60s)...")
-					time.Sleep(20 * time.Second)
-
-					podList, err = getPodList(aeroCluster, k8sClient)
-					Expect(err).ToNot(HaveOccurred())
-
-					By("Verifying pods are not recreated within grace period")
-
-					for idx := range podList.Items {
-						pod := &podList.Items[idx]
-						if pod.Name == pendingPod.Name {
-							Expect(pod.Status.Phase).To(Equal(v1.PodPending))
-							Expect(pod.UID).To(Equal(pendingPod.UID))
-
-							break
-						}
-					}
-
-					By("Verifying pods are recreated after grace period")
-					Eventually(
-						func() bool {
 							podList, err = getPodList(aeroCluster, k8sClient)
-							if err != nil {
-								pkgLog.Error(err, "Failed to get pod list")
-								return false
+							Expect(err).ToNot(HaveOccurred())
+
+							By("Verifying pods are not recreated within grace period")
+
+							for idx := range podList.Items {
+								pod := &podList.Items[idx]
+								Expect(pod.Status.Phase).To(Equal(v1.PodPending))
+								Expect(uuidMap[pod.Name]).To(Equal(pod.UID))
 							}
+
+							By("Verifying pods are recreated after grace period")
+
+							Eventually(
+								func() error {
+									podList, err = getPodList(aeroCluster, k8sClient)
+									if err != nil {
+										return err
+									}
+
+									if len(podList.Items) != int(aeroCluster.Spec.Size) {
+										return fmt.Errorf("expected %d pods, found %d",
+											aeroCluster.Spec.Size, len(podList.Items))
+									}
+
+									for idx := range podList.Items {
+										pod := &podList.Items[idx]
+										if uuidMap[pod.Name] == pod.UID {
+											return fmt.Errorf("pod %s was not recreated yet", pod.Name)
+										}
+									}
+
+									return nil
+								}, 5*time.Minute, 10*time.Second).Should(Succeed())
+						},
+					)
+
+					It(
+						"Should wait for grace period before recreating pods in an existing cluster", func() {
+							aeroCluster := createDummyAerospikeCluster(clusterNamespacedName, 2)
+
+							Expect(DeployCluster(k8sClient, ctx, aeroCluster)).ToNot(HaveOccurred())
+
+							aeroCluster.Spec.PodSpec.AerospikeContainerSpec.Resources = unschedulableResource()
+
+							err := updateClusterWithNoWait(k8sClient, ctx, aeroCluster)
+							Expect(err).ToNot(HaveOccurred())
+
+							var (
+								podList    *v1.PodList
+								pendingPod *v1.Pod
+							)
+
+							Eventually(
+								func() error {
+									podList, err = getPodList(aeroCluster, k8sClient)
+									if err != nil {
+										return err
+									}
+
+									for idx := range podList.Items {
+										pod := &podList.Items[idx]
+										if pod.Status.Phase == v1.PodPending {
+											pendingPod = pod
+											return nil
+										}
+									}
+
+									return fmt.Errorf("no pod in pending state")
+								}, 5*time.Minute, 10*time.Second,
+							).Should(Succeed())
+
+							By("Waiting within grace period and verifying operator does not recreate pods")
+							pkgLog.Info("Waiting 20 seconds within grace period (grace period = 60s)...")
+							time.Sleep(20 * time.Second)
+
+							podList, err = getPodList(aeroCluster, k8sClient)
+							Expect(err).ToNot(HaveOccurred())
+
+							By("Verifying pods are not recreated within grace period")
 
 							for idx := range podList.Items {
 								pod := &podList.Items[idx]
 								if pod.Name == pendingPod.Name {
-									return pod.UID != pendingPod.UID
+									Expect(pod.Status.Phase).To(Equal(v1.PodPending))
+									Expect(pod.UID).To(Equal(pendingPod.UID))
+
+									break
 								}
 							}
 
-							return false
-						}, 5*time.Minute, 10*time.Second).Should(BeTrue())
+							By("Verifying pods are recreated after grace period")
+							Eventually(
+								func() bool {
+									podList, err = getPodList(aeroCluster, k8sClient)
+									if err != nil {
+										pkgLog.Error(err, "Failed to get pod list")
+										return false
+									}
+
+									for idx := range podList.Items {
+										pod := &podList.Items[idx]
+										if pod.Name == pendingPod.Name {
+											return pod.UID != pendingPod.UID
+										}
+									}
+
+									return false
+								}, 5*time.Minute, 10*time.Second).Should(BeTrue())
+						},
+					)
 				},
 			)
+
+			Context("InvalidServerEditionChange", func() {
+				clusterName := fmt.Sprintf("edition-change-%d", GinkgoParallelProcess())
+				clusterNamespacedName := test.GetNamespacedName(
+					clusterName, namespace,
+				)
+
+				AfterEach(
+					func() {
+						aeroCluster := &asdbv1.AerospikeCluster{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      clusterNamespacedName.Name,
+								Namespace: clusterNamespacedName.Namespace,
+							},
+						}
+
+						Expect(DeleteCluster(k8sClient, ctx, aeroCluster)).ToNot(HaveOccurred())
+						Expect(CleanupPVC(k8sClient, aeroCluster.Namespace, aeroCluster.Name)).ToNot(HaveOccurred())
+					},
+				)
+
+				It("Should fail if server edition is updated from enterprise to federal", func() {
+					aeroCluster := CreatePKIAuthEnabledCluster(clusterNamespacedName, 2)
+					err := DeployCluster(k8sClient, ctx, aeroCluster)
+					Expect(err).ToNot(HaveOccurred())
+					By("Updating cluster image from enterprise to federal")
+
+					aeroCluster.Spec.Image = latestFederalImage
+					err = updateCluster(k8sClient, ctx, aeroCluster)
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(ContainSubstring("enterprise to federal edition upgrade is not supported"))
+				})
+
+				It("Should fail if server image updated from federal to enterprise", func() {
+					aeroCluster := CreatePKIAuthEnabledCluster(clusterNamespacedName, 2)
+					aeroCluster.Spec.Image = latestFederalImage
+					err := DeployCluster(k8sClient, ctx, aeroCluster)
+					Expect(err).ToNot(HaveOccurred())
+
+					By("Updating cluster image from federal to enterprise")
+
+					aeroCluster.Spec.Image = latestImage
+					err = updateCluster(k8sClient, ctx, aeroCluster)
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(ContainSubstring("federal to enterprise edition upgrade is not supported"))
+				})
+			})
 		},
 	)
-
-	Context("InvalidServerEditionChange", func() {
-		clusterName := fmt.Sprintf("edition-change-%d", GinkgoParallelProcess())
-		clusterNamespacedName := test.GetNamespacedName(
-			clusterName, namespace,
-		)
-
-		AfterEach(
-			func() {
-				aeroCluster := &asdbv1.AerospikeCluster{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      clusterNamespacedName.Name,
-						Namespace: clusterNamespacedName.Namespace,
-					},
-				}
-
-				Expect(DeleteCluster(k8sClient, ctx, aeroCluster)).ToNot(HaveOccurred())
-				Expect(CleanupPVC(k8sClient, aeroCluster.Namespace, aeroCluster.Name)).ToNot(HaveOccurred())
-			},
-		)
-
-		It("Should fail if server edition is updated from enterprise to federal", func() {
-			aeroCluster := CreatePKIAuthEnabledCluster(clusterNamespacedName, 2)
-			err := DeployCluster(k8sClient, ctx, aeroCluster)
-			Expect(err).ToNot(HaveOccurred())
-			By("Updating cluster image from enterprise to federal")
-
-			aeroCluster.Spec.Image = latestFederalImage
-			err = updateCluster(k8sClient, ctx, aeroCluster)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("enterprise to federal edition upgrade is not supported"))
-		})
-
-		It("Should fail if server image updated from federal to enterprise", func() {
-			aeroCluster := CreatePKIAuthEnabledCluster(clusterNamespacedName, 2)
-			aeroCluster.Spec.Image = latestFederalImage
-			err := DeployCluster(k8sClient, ctx, aeroCluster)
-			Expect(err).ToNot(HaveOccurred())
-
-			By("Updating cluster image from federal to enterprise")
-
-			aeroCluster.Spec.Image = latestImage
-			err = updateCluster(k8sClient, ctx, aeroCluster)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("federal to enterprise edition upgrade is not supported"))
-		})
-	})
 }
